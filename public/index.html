@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#0f172a" />
+    <title>Zegar gry</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="join_screen" class="screen">
+      <header class="header">
+        <h1>Zegar gry</h1>
+        <p class="subtitle">Zegar dla 4 graczy w lokalnej sieci Wi-Fi</p>
+      </header>
+
+      <section class="card">
+        <h2>Wybierz kolor</h2>
+        <div class="player_grid" id="player_buttons">
+          <button class="player_button player_red" data-player-index="0">Czerwony</button>
+          <button class="player_button player_blue" data-player-index="1">Niebieski</button>
+          <button class="player_button player_yellow" data-player-index="2">Żółty</button>
+          <button class="player_button player_green" data-player-index="3">Zielony</button>
+        </div>
+        <p class="hint" id="join_hint">Wybierz swój kolor. Każdy telefon musi wybrać inny.</p>
+        <p class="error_message" id="join_error" hidden></p>
+      </section>
+    </div>
+
+    <div id="game_screen" class="screen game_screen" hidden>
+      <div class="other_players_row" id="other_players_row"></div>
+
+      <section class="your_timer_section" id="your_timer_section">
+        <button class="edit_self_button" id="edit_self_button" type="button" hidden>Edytuj</button>
+        <p class="your_turn_count" id="your_turn_count">0</p>
+        <p class="your_timer_label player_red" id="your_player_label">Czerwony</p>
+        <p class="your_timer_value" id="main_timer_value">0:00</p>
+        <button class="primary_button large_button" id="end_turn_button" type="button" disabled>
+          Zakończ moją turę
+        </button>
+        <button class="secondary_button large_button" id="additional_turn_button" type="button" disabled>
+          Dodatkowa tura
+        </button>
+        <p class="error_message" id="action_error" hidden></p>
+      </section>
+
+      <section class="card setup_card" id="setup_card" hidden>
+        <h2>Kolejność tur</h2>
+        <div class="turn_order_list" id="turn_order_list"></div>
+        <div class="button_row setup_start_row">
+          <button class="primary_button" id="start_game_button" type="button">Rozpocznij grę</button>
+        </div>
+      </section>
+
+      <section class="card admin_controls_card" id="admin_controls_card" hidden>
+        <div class="button_row" id="admin_action_controls">
+          <button class="secondary_button" id="pause_button" type="button" disabled>Pauza</button>
+          <button class="secondary_button" id="resume_button" type="button" hidden>Wznów</button>
+          <button class="secondary_button danger_button" id="reset_button" type="button">
+            Resetuj
+          </button>
+        </div>
+      </section>
+
+      <footer class="game_footer">
+        <button class="text_button" id="change_player_button" type="button">Zmień gracza</button>
+      </footer>
+    </div>
+
+    <div id="edit_player_modal" class="modal" hidden>
+      <div class="modal_card">
+        <h2 id="edit_player_title">Edytuj gracza</h2>
+        <label class="field_label" for="edit_time_minutes">Minuty</label>
+        <input class="time_input" id="edit_time_minutes" type="number" min="0" value="0" />
+        <label class="field_label" for="edit_time_seconds">Sekundy</label>
+        <input class="time_input" id="edit_time_seconds" type="number" min="0" max="59" value="0" />
+        <label class="field_label" for="edit_turn_count">Tury</label>
+        <input class="time_input" id="edit_turn_count" type="number" min="0" value="0" />
+        <div class="button_row">
+          <button class="primary_button" id="save_player_edit_button" type="button">Zapisz</button>
+          <button class="secondary_button" id="cancel_player_edit_button" type="button">Anuluj</button>
+        </div>
+        <p class="error_message" id="edit_player_error" hidden></p>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
