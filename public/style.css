@@ -414,12 +414,19 @@ h2 {
 
 .large_button {
   width: 100%;
-  min-height: 64px;
-  font-size: 1.1rem;
+  min-height: 84px;
+  font-size: 1.35rem;
+  padding: 16px;
 }
 
 .large_button + .large_button {
-  margin-top: 10px;
+  margin-top: 12px;
+}
+
+#end_turn_button {
+  min-height: 168px;
+  font-size: 2.7rem;
+  padding: 24px;
 }
 
 .text_button {
