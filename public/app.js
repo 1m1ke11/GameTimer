@@ -54,6 +54,14 @@ function formatTime(milliseconds) {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
+function formatTurnCount(player_index, game_state) {
+  const total_turn_count = game_state.player_turn_counts[player_index] ?? 0;
+  const additional_turn_count = game_state.player_additional_turns_used?.[player_index] ?? 0;
+  const regular_turn_count = Math.max(0, total_turn_count - additional_turn_count);
+
+  return `${regular_turn_count}+${additional_turn_count}`;
+}
+
 function getDisplayTimes(game_state) {
   const display_times = [...game_state.player_times_ms];
 
@@ -271,7 +279,7 @@ function renderOtherPlayersRow(display_times, game_state) {
 
     const turn_count = document.createElement('div');
     turn_count.className = 'other_player_turn_count';
-    turn_count.textContent = String(game_state.player_turn_counts[player_index] ?? 0);
+    turn_count.textContent = formatTurnCount(player_index, game_state);
 
     const name = document.createElement('div');
     name.className = 'other_player_name';
@@ -352,7 +360,7 @@ function renderGameState(game_state) {
     game_state.active_player_index === current_player_index;
 
   main_timer_value.textContent = formatTime(your_time);
-  your_turn_count.textContent = String(game_state.player_turn_counts[current_player_index] ?? 0);
+  your_turn_count.textContent = formatTurnCount(current_player_index, game_state);
   your_timer_section.className = `your_timer_section ${PLAYER_COLOR_CLASSES[current_player_index]}`;
   your_timer_section.classList.toggle('is_active', is_your_turn);
   edit_self_button.hidden = !isAdmin(current_player_index);
