@@ -2,7 +2,9 @@ const PLAYER_STORAGE_KEY = 'game_timer_player_index';
 const PLAYER_NAMES = ['Czerwony', 'Niebieski', 'Żółty', 'Zielony'];
 const PLAYER_COLOR_CLASSES = ['player_red', 'player_blue', 'player_yellow', 'player_green'];
 const ADMIN_PLAYER_INDEX = 0;
-const MAX_ADDITIONAL_TURNS_PER_PLAYER = 3;
+const MAX_ADDITIONAL_TURNS_PER_TURN = 2;
+const DEFAULT_SECONDS_PER_TURN = 30;
+const DEFAULT_OVERTIME_POINTS_PER_MINUTE = 5;
 
 const socket = io();
 
@@ -10,6 +12,8 @@ let current_player_index = null;
 let latest_game_state = null;
 let display_interval_id = null;
 let editing_player_index = null;
+let pending_additional_turn_confirmation_player_index = null;
+let pending_additional_turn_confirmation_timeout_id = null;
 
 const join_screen = document.getElementById('join_screen');
 const game_screen = document.getElementById('game_screen');
@@ -20,10 +24,15 @@ const your_player_label = document.getElementById('your_player_label');
 const your_timer_section = document.getElementById('your_timer_section');
 const edit_self_button = document.getElementById('edit_self_button');
 const your_turn_count = document.getElementById('your_turn_count');
+const your_pace_points = document.getElementById('your_pace_points');
 const main_timer_value = document.getElementById('main_timer_value');
 const other_players_row = document.getElementById('other_players_row');
 const setup_card = document.getElementById('setup_card');
 const turn_order_list = document.getElementById('turn_order_list');
+const seconds_per_turn_input = document.getElementById('seconds_per_turn_input');
+const overtime_points_per_minute_input = document.getElementById(
+  'overtime_points_per_minute_input'
+);
 const start_game_button = document.getElementById('start_game_button');
 const end_turn_button = document.getElementById('end_turn_button');
 const additional_turn_button = document.getElementById('additional_turn_button');
@@ -60,6 +69,25 @@ function formatTurnCount(player_index, game_state) {
   const regular_turn_count = Math.max(0, total_turn_count - additional_turn_count);
 
   return `${regular_turn_count}+${additional_turn_count}`;
+}
+
+function calculatePacePoints(player_index, time_ms, game_state) {
+  const total_turn_count = game_state.player_turn_counts[player_index] ?? 0;
+  const seconds_per_turn = game_state.seconds_per_turn ?? DEFAULT_SECONDS_PER_TURN;
+  const overtime_points_per_minute =
+    game_state.overtime_points_per_minute ?? DEFAULT_OVERTIME_POINTS_PER_MINUTE;
+  const allowed_time_ms = total_turn_count * seconds_per_turn * 1000;
+  const overtime_ms = Math.max(0, time_ms - allowed_time_ms);
+  const overtime_seconds = overtime_ms / 1000;
+  const overtime_points = Math.floor(
+    (overtime_seconds * overtime_points_per_minute) / 60
+  );
+
+  return -overtime_points;
+}
+
+function formatPacePoints(player_index, time_ms, game_state) {
+  return String(calculatePacePoints(player_index, time_ms, game_state));
 }
 
 function getDisplayTimes(game_state) {
@@ -251,47 +279,132 @@ function updateJoinButtons(game_state) {
       : `${connected_count} z 4 graczy połączonych.`;
 }
 
-function renderOtherPlayersRow(display_times, game_state) {
-  other_players_row.innerHTML = '';
+function getOtherPlayerIndexes(game_state) {
+  return getTurnOrder(game_state).filter(
+    (player_index) => player_index !== current_player_index
+  );
+}
 
-  const turn_order = getTurnOrder(game_state);
+function createOtherPlayerCell(player_index, elapsed_time, game_state) {
+  const is_active =
+    game_state.status === 'running' && game_state.active_player_index === player_index;
 
-  for (const player_index of turn_order) {
-    if (player_index === current_player_index) {
-      continue;
-    }
+  const cell = document.createElement('div');
+  cell.className = `other_player_cell ${PLAYER_COLOR_CLASSES[player_index]}`;
+  cell.dataset.playerIndex = String(player_index);
 
-    const elapsed_time = display_times[player_index];
-    const is_active =
-      game_state.status === 'running' && game_state.active_player_index === player_index;
-
-    const cell = document.createElement('div');
-    cell.className = `other_player_cell ${PLAYER_COLOR_CLASSES[player_index]}`;
-    cell.dataset.playerIndex = String(player_index);
-
-    if (isAdmin(current_player_index)) {
-      cell.classList.add('is_admin_editable');
-    }
-
-    if (is_active) {
-      cell.classList.add('is_active');
-    }
-
-    const turn_count = document.createElement('div');
-    turn_count.className = 'other_player_turn_count';
-    turn_count.textContent = formatTurnCount(player_index, game_state);
-
-    const name = document.createElement('div');
-    name.className = 'other_player_name';
-    name.textContent = PLAYER_NAMES[player_index];
-
-    const time = document.createElement('div');
-    time.className = 'other_player_time';
-    time.textContent = formatTime(elapsed_time);
-
-    cell.append(turn_count, name, time);
-    other_players_row.appendChild(cell);
+  if (isAdmin(current_player_index)) {
+    cell.classList.add('is_admin_editable');
   }
+
+  if (is_active) {
+    cell.classList.add('is_active');
+  }
+
+  const turn_count = document.createElement('div');
+  turn_count.className = 'other_player_turn_count';
+  turn_count.textContent = formatTurnCount(player_index, game_state);
+
+  const pace_points = document.createElement('div');
+  pace_points.className = 'other_player_pace_points';
+  pace_points.textContent = formatPacePoints(player_index, elapsed_time, game_state);
+  pace_points.classList.toggle(
+    'is_negative',
+    calculatePacePoints(player_index, elapsed_time, game_state) < 0
+  );
+
+  const name = document.createElement('div');
+  name.className = 'other_player_name';
+  name.textContent = PLAYER_NAMES[player_index];
+
+  const time = document.createElement('div');
+  time.className = 'other_player_time';
+  time.textContent = formatTime(elapsed_time);
+
+  cell.append(turn_count, pace_points, name, time);
+  return cell;
+}
+
+function updateOtherPlayerCell(cell, player_index, elapsed_time, game_state) {
+  const is_active =
+    game_state.status === 'running' && game_state.active_player_index === player_index;
+
+  cell.className = `other_player_cell ${PLAYER_COLOR_CLASSES[player_index]}`;
+  if (isAdmin(current_player_index)) {
+    cell.classList.add('is_admin_editable');
+  }
+  cell.classList.toggle('is_active', is_active);
+
+  const turn_count = cell.querySelector('.other_player_turn_count');
+  const pace_points = cell.querySelector('.other_player_pace_points');
+  const time = cell.querySelector('.other_player_time');
+
+  if (turn_count) {
+    turn_count.textContent = formatTurnCount(player_index, game_state);
+  }
+
+  if (pace_points) {
+    pace_points.textContent = formatPacePoints(player_index, elapsed_time, game_state);
+    pace_points.classList.toggle(
+      'is_negative',
+      calculatePacePoints(player_index, elapsed_time, game_state) < 0
+    );
+  }
+
+  if (time) {
+    time.textContent = formatTime(elapsed_time);
+  }
+}
+
+function renderOtherPlayersRow(display_times, game_state) {
+  const other_player_indexes = getOtherPlayerIndexes(game_state);
+  const existing_cells = [...other_players_row.querySelectorAll('.other_player_cell')];
+  const existing_order = existing_cells.map((cell) => Number(cell.dataset.playerIndex));
+  const order_matches =
+    existing_order.length === other_player_indexes.length &&
+    existing_order.every(
+      (player_index, order_position) => player_index === other_player_indexes[order_position]
+    );
+
+  if (!order_matches) {
+    other_players_row.innerHTML = '';
+
+    for (const player_index of other_player_indexes) {
+      other_players_row.appendChild(
+        createOtherPlayerCell(player_index, display_times[player_index], game_state)
+      );
+    }
+
+    return;
+  }
+
+  for (let order_position = 0; order_position < other_player_indexes.length; order_position += 1) {
+    const player_index = other_player_indexes[order_position];
+    updateOtherPlayerCell(
+      existing_cells[order_position],
+      player_index,
+      display_times[player_index],
+      game_state
+    );
+  }
+}
+
+function updatePaceSettingsInputs(game_state) {
+  const seconds_per_turn = game_state.seconds_per_turn ?? DEFAULT_SECONDS_PER_TURN;
+  const overtime_points_per_minute =
+    game_state.overtime_points_per_minute ?? DEFAULT_OVERTIME_POINTS_PER_MINUTE;
+  const inputs_are_editable = game_state.status === 'waiting' && isAdmin(current_player_index);
+
+  if (document.activeElement !== seconds_per_turn_input) {
+    seconds_per_turn_input.value = String(seconds_per_turn);
+  }
+
+  if (document.activeElement !== overtime_points_per_minute_input) {
+    overtime_points_per_minute_input.value = String(overtime_points_per_minute);
+  }
+
+  seconds_per_turn_input.disabled = !inputs_are_editable;
+  overtime_points_per_minute_input.disabled = !inputs_are_editable;
 }
 
 function updateActionButtons(game_state) {
@@ -330,19 +443,82 @@ function updateActionButtons(game_state) {
   reset_button.disabled = !player_is_admin;
 
   const additional_turns_used =
-    game_state.player_additional_turns_used?.[active_player_index] ?? 0;
+    game_state.additional_turns_used_this_turn ?? 0;
   const additional_turns_remaining =
-    MAX_ADDITIONAL_TURNS_PER_PLAYER - additional_turns_used;
+    MAX_ADDITIONAL_TURNS_PER_TURN - additional_turns_used;
   const can_use_additional_turn =
     is_running && additional_turns_remaining > 0 && (player_is_admin || is_your_turn);
 
   additional_turn_button.disabled = !can_use_additional_turn;
-  additional_turn_button.textContent = 'Dodatkowa tura';
+  if (!additional_turn_button.classList.contains('is_confirmed')) {
+    additional_turn_button.textContent = 'Dodatkowa tura';
+  }
 
   if (is_paused || is_waiting) {
     end_turn_button.disabled = true;
     additional_turn_button.disabled = true;
   }
+}
+
+function getAdditionalTurnCountElement(player_index) {
+  if (player_index === current_player_index) {
+    return your_turn_count;
+  }
+
+  return other_players_row.querySelector(
+    `.other_player_cell[data-player-index="${player_index}"] .other_player_turn_count`
+  );
+}
+
+function applyPendingTurnCountBump() {
+  if (pending_additional_turn_confirmation_player_index === null) {
+    return;
+  }
+
+  const turn_count_element = getAdditionalTurnCountElement(
+    pending_additional_turn_confirmation_player_index
+  );
+
+  if (turn_count_element && !turn_count_element.classList.contains('is_bumped')) {
+    turn_count_element.classList.add('is_bumped');
+  }
+}
+
+function playAdditionalTurnConfirmation(active_player_index) {
+  if (pending_additional_turn_confirmation_timeout_id !== null) {
+    window.clearTimeout(pending_additional_turn_confirmation_timeout_id);
+  }
+
+  pending_additional_turn_confirmation_player_index = active_player_index;
+
+  additional_turn_button.classList.remove('is_confirmed');
+  // Restart CSS animation even if clicked again quickly.
+  void additional_turn_button.offsetWidth;
+  additional_turn_button.classList.add('is_confirmed');
+  additional_turn_button.textContent = 'Dodano +1';
+
+  const turn_count_element = getAdditionalTurnCountElement(active_player_index);
+
+  if (turn_count_element) {
+    turn_count_element.classList.remove('is_bumped');
+    void turn_count_element.offsetWidth;
+    turn_count_element.classList.add('is_bumped');
+  }
+
+  pending_additional_turn_confirmation_timeout_id = window.setTimeout(() => {
+    pending_additional_turn_confirmation_player_index = null;
+    pending_additional_turn_confirmation_timeout_id = null;
+    additional_turn_button.classList.remove('is_confirmed');
+
+    const finished_turn_count_element = getAdditionalTurnCountElement(active_player_index);
+    if (finished_turn_count_element) {
+      finished_turn_count_element.classList.remove('is_bumped');
+    }
+
+    if (latest_game_state) {
+      updateActionButtons(latest_game_state);
+    }
+  }, 900);
 }
 
 function renderGameState(game_state) {
@@ -361,14 +537,19 @@ function renderGameState(game_state) {
 
   main_timer_value.textContent = formatTime(your_time);
   your_turn_count.textContent = formatTurnCount(current_player_index, game_state);
+  const your_points = calculatePacePoints(current_player_index, your_time, game_state);
+  your_pace_points.textContent = String(your_points);
+  your_pace_points.classList.toggle('is_negative', your_points < 0);
   your_timer_section.className = `your_timer_section ${PLAYER_COLOR_CLASSES[current_player_index]}`;
   your_timer_section.classList.toggle('is_active', is_your_turn);
   edit_self_button.hidden = !isAdmin(current_player_index);
 
   renderOtherPlayersRow(display_times, game_state);
   renderTurnOrderList(game_state);
+  updatePaceSettingsInputs(game_state);
   updateActionButtons(game_state);
   updateJoinButtons(game_state);
+  applyPendingTurnCountBump();
 }
 
 function joinPlayer(player_index) {
@@ -388,6 +569,9 @@ function joinPlayer(player_index) {
       player_times_ms: [0, 0, 0, 0],
       player_turn_counts: [0, 0, 0, 0],
       player_additional_turns_used: [0, 0, 0, 0],
+      additional_turns_used_this_turn: 0,
+      seconds_per_turn: DEFAULT_SECONDS_PER_TURN,
+      overtime_points_per_minute: DEFAULT_OVERTIME_POINTS_PER_MINUTE,
       player_turn_order: [0, 1, 2, 3],
       connected_players: {}
     });
@@ -422,8 +606,45 @@ change_player_button.addEventListener('click', () => {
 });
 
 start_game_button.addEventListener('click', () => {
-  emitWithFeedback('start_game', null, action_error);
+  showError(action_error, '');
+
+  socket.emit(
+    'start_game',
+    {
+      seconds_per_turn: Number(seconds_per_turn_input.value),
+      overtime_points_per_minute: Number(overtime_points_per_minute_input.value)
+    },
+    (response) => {
+      if (!response?.success) {
+        showError(action_error, response?.message ?? 'Akcja nie powiodła się.');
+      }
+    }
+  );
 });
+
+function emitPaceSettingsUpdate() {
+  if (!isAdmin(current_player_index) || latest_game_state?.status !== 'waiting') {
+    return;
+  }
+
+  showError(action_error, '');
+
+  socket.emit(
+    'update_pace_settings',
+    {
+      seconds_per_turn: Number(seconds_per_turn_input.value),
+      overtime_points_per_minute: Number(overtime_points_per_minute_input.value)
+    },
+    (response) => {
+      if (!response?.success) {
+        showError(action_error, response?.message ?? 'Nie udało się zapisać ustawień.');
+      }
+    }
+  );
+}
+
+seconds_per_turn_input.addEventListener('change', emitPaceSettingsUpdate);
+overtime_points_per_minute_input.addEventListener('change', emitPaceSettingsUpdate);
 
 turn_order_list.addEventListener('click', (event) => {
   const button = event.target.closest('.turn_order_button');
@@ -453,7 +674,20 @@ end_turn_button.addEventListener('click', () => {
 });
 
 additional_turn_button.addEventListener('click', () => {
-  emitWithFeedback('additional_turn', null, action_error);
+  showError(action_error, '');
+
+  const active_player_index = latest_game_state?.active_player_index;
+
+  socket.emit('additional_turn', (response) => {
+    if (!response?.success) {
+      showError(action_error, response?.message ?? 'Akcja nie powiodła się.');
+      return;
+    }
+
+    if (Number.isInteger(active_player_index)) {
+      playAdditionalTurnConfirmation(active_player_index);
+    }
+  });
 });
 
 other_players_row.addEventListener('click', (event) => {

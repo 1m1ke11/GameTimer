@@ -8,7 +8,13 @@ const { saveGameState, loadGameState, GAME_STATE_FILE, BACKUP_DIRECTORY } = requ
 const PORT = 3000;
 const PLAYER_NAMES = ['Czerwony', 'Niebieski', 'Żółty', 'Zielony'];
 const ADMIN_PLAYER_INDEX = 0;
-const MAX_ADDITIONAL_TURNS_PER_PLAYER = 3;
+const MAX_ADDITIONAL_TURNS_PER_TURN = 2;
+const DEFAULT_SECONDS_PER_TURN = 30;
+const DEFAULT_OVERTIME_POINTS_PER_MINUTE = 5;
+const MIN_SECONDS_PER_TURN = 1;
+const MAX_SECONDS_PER_TURN = 3600;
+const MIN_OVERTIME_POINTS_PER_MINUTE = 1;
+const MAX_OVERTIME_POINTS_PER_MINUTE = 100;
 
 const app = express();
 const server = http.createServer(app);
@@ -26,6 +32,9 @@ function createInitialGameState() {
     player_times_ms: [0, 0, 0, 0],
     player_turn_counts: [0, 0, 0, 0],
     player_additional_turns_used: [0, 0, 0, 0],
+    additional_turns_used_this_turn: 0,
+    seconds_per_turn: DEFAULT_SECONDS_PER_TURN,
+    overtime_points_per_minute: DEFAULT_OVERTIME_POINTS_PER_MINUTE,
     player_turn_order: [0, 1, 2, 3],
     connected_players: {}
   };
@@ -75,6 +84,9 @@ function getPublicGameState() {
     player_times_ms: [...game_state.player_times_ms],
     player_turn_counts: [...game_state.player_turn_counts],
     player_additional_turns_used: [...game_state.player_additional_turns_used],
+    additional_turns_used_this_turn: game_state.additional_turns_used_this_turn,
+    seconds_per_turn: game_state.seconds_per_turn,
+    overtime_points_per_minute: game_state.overtime_points_per_minute,
     player_turn_order: [...game_state.player_turn_order],
     connected_players: { ...game_state.connected_players }
   };
@@ -119,12 +131,46 @@ function rejectUnlessAdmin(socket, callback) {
   return true;
 }
 
+function normalizePaceSettings(settings) {
+  const seconds_per_turn = Number(settings?.seconds_per_turn);
+  const overtime_points_per_minute = Number(settings?.overtime_points_per_minute);
+
+  if (
+    !Number.isInteger(seconds_per_turn) ||
+    seconds_per_turn < MIN_SECONDS_PER_TURN ||
+    seconds_per_turn > MAX_SECONDS_PER_TURN
+  ) {
+    return {
+      success: false,
+      message: `Podaj sekundy na turę od ${MIN_SECONDS_PER_TURN} do ${MAX_SECONDS_PER_TURN}.`
+    };
+  }
+
+  if (
+    !Number.isInteger(overtime_points_per_minute) ||
+    overtime_points_per_minute < MIN_OVERTIME_POINTS_PER_MINUTE ||
+    overtime_points_per_minute > MAX_OVERTIME_POINTS_PER_MINUTE
+  ) {
+    return {
+      success: false,
+      message: `Podaj punkty za minutę od ${MIN_OVERTIME_POINTS_PER_MINUTE} do ${MAX_OVERTIME_POINTS_PER_MINUTE}.`
+    };
+  }
+
+  return {
+    success: true,
+    seconds_per_turn,
+    overtime_points_per_minute
+  };
+}
+
 function advanceToNextPlayer() {
   const turn_order = game_state.player_turn_order;
   const current_order_position = turn_order.indexOf(game_state.active_player_index);
   const next_order_position = (current_order_position + 1) % 4;
   game_state.active_player_index = turn_order[next_order_position];
   game_state.player_turn_counts[game_state.active_player_index] += 1;
+  game_state.additional_turns_used_this_turn = 0;
   game_state.turn_started_at = Date.now();
 }
 
@@ -194,7 +240,42 @@ io.on('connection', (socket) => {
     broadcastGameState();
   });
 
-  socket.on('start_game', (callback) => {
+  socket.on('update_pace_settings', (settings, callback) => {
+    if (!rejectUnlessAdmin(socket, callback)) {
+      return;
+    }
+
+    if (game_state.status !== 'waiting') {
+      callback?.({
+        success: false,
+        message: 'Można zmieniać ustawienia tylko przed rozpoczęciem gry.'
+      });
+      return;
+    }
+
+    const normalized_settings = normalizePaceSettings(settings);
+
+    if (!normalized_settings.success) {
+      callback?.({
+        success: false,
+        message: normalized_settings.message
+      });
+      return;
+    }
+
+    game_state.seconds_per_turn = normalized_settings.seconds_per_turn;
+    game_state.overtime_points_per_minute = normalized_settings.overtime_points_per_minute;
+
+    callback?.({ success: true });
+    broadcastGameState();
+  });
+
+  socket.on('start_game', (settings, callback) => {
+    if (typeof settings === 'function') {
+      callback = settings;
+      settings = null;
+    }
+
     if (!rejectUnlessAdmin(socket, callback)) {
       return;
     }
@@ -204,9 +285,25 @@ io.on('connection', (socket) => {
       return;
     }
 
+    if (settings) {
+      const normalized_settings = normalizePaceSettings(settings);
+
+      if (!normalized_settings.success) {
+        callback?.({
+          success: false,
+          message: normalized_settings.message
+        });
+        return;
+      }
+
+      game_state.seconds_per_turn = normalized_settings.seconds_per_turn;
+      game_state.overtime_points_per_minute = normalized_settings.overtime_points_per_minute;
+    }
+
     game_state.status = 'running';
     game_state.active_player_index = game_state.player_turn_order[0];
     game_state.player_turn_counts[game_state.active_player_index] += 1;
+    game_state.additional_turns_used_this_turn = 0;
     game_state.turn_started_at = Date.now();
 
     callback?.({ success: true });
@@ -252,19 +349,17 @@ io.on('connection', (socket) => {
 
     const active_player_index = game_state.active_player_index;
 
-    if (
-      game_state.player_additional_turns_used[active_player_index] >=
-      MAX_ADDITIONAL_TURNS_PER_PLAYER
-    ) {
+    if (game_state.additional_turns_used_this_turn >= MAX_ADDITIONAL_TURNS_PER_TURN) {
       callback?.({
         success: false,
-        message: `${PLAYER_NAMES[active_player_index]} nie ma już dodatkowych tur.`
+        message: `${PLAYER_NAMES[active_player_index]} nie ma już dodatkowych tur w tej turze.`
       });
       return;
     }
 
     game_state.player_turn_counts[active_player_index] += 1;
     game_state.player_additional_turns_used[active_player_index] += 1;
+    game_state.additional_turns_used_this_turn += 1;
 
     callback?.({ success: true });
     broadcastGameState();
@@ -348,7 +443,12 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const previous_seconds_per_turn = game_state.seconds_per_turn;
+    const previous_overtime_points_per_minute = game_state.overtime_points_per_minute;
+
     game_state = createInitialGameState();
+    game_state.seconds_per_turn = previous_seconds_per_turn;
+    game_state.overtime_points_per_minute = previous_overtime_points_per_minute;
 
     for (const [socket_id, player_index] of socket_to_player.entries()) {
       game_state.connected_players[player_index] = socket_id;

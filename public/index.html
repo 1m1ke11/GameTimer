@@ -35,9 +35,10 @@
       <div class="other_players_row" id="other_players_row"></div>
 
       <section class="your_timer_section" id="your_timer_section">
-        <button class="edit_self_button" id="edit_self_button" type="button" hidden>Edytuj</button>
         <p class="your_turn_count" id="your_turn_count">0</p>
+        <p class="your_pace_points" id="your_pace_points">0</p>
         <p class="your_timer_label player_red" id="your_player_label">Czerwony</p>
+        <button class="edit_self_button" id="edit_self_button" type="button" hidden>Edytuj</button>
         <p class="your_timer_value" id="main_timer_value">0:00</p>
         <button class="primary_button large_button" id="end_turn_button" type="button" disabled>
           Zakończ moją turę
@@ -51,6 +52,29 @@
       <section class="card setup_card" id="setup_card" hidden>
         <h2>Kolejność tur</h2>
         <div class="turn_order_list" id="turn_order_list"></div>
+
+        <h2 class="setup_section_title">Punkty</h2>
+        <label class="field_label" for="seconds_per_turn_input">Sekundy na turę</label>
+        <input
+          class="time_input"
+          id="seconds_per_turn_input"
+          type="number"
+          min="1"
+          max="3600"
+          value="30"
+        />
+        <label class="field_label" for="overtime_points_per_minute_input">
+          Punkty za minutę nadmiaru
+        </label>
+        <input
+          class="time_input"
+          id="overtime_points_per_minute_input"
+          type="number"
+          min="1"
+          max="100"
+          value="5"
+        />
+
         <div class="button_row setup_start_row">
           <button class="primary_button" id="start_game_button" type="button">Rozpocznij grę</button>
         </div>

@@ -19,6 +19,9 @@ function createPersistedGameState(game_state) {
     player_times_ms: [...game_state.player_times_ms],
     player_turn_counts: [...game_state.player_turn_counts],
     player_additional_turns_used: [...game_state.player_additional_turns_used],
+    additional_turns_used_this_turn: game_state.additional_turns_used_this_turn ?? 0,
+    seconds_per_turn: game_state.seconds_per_turn,
+    overtime_points_per_minute: game_state.overtime_points_per_minute,
     player_turn_order: [...game_state.player_turn_order],
     connected_players: {},
     saved_at: Date.now()
@@ -116,6 +119,21 @@ function normalizeLoadedGameState(loaded_game_state, createInitialGameState) {
           Math.max(0, Number(used_count) || 0)
         )
       : [...initial_game_state.player_additional_turns_used],
+    additional_turns_used_this_turn: Number.isInteger(
+      loaded_game_state.additional_turns_used_this_turn
+    )
+      ? Math.max(0, loaded_game_state.additional_turns_used_this_turn)
+      : initial_game_state.additional_turns_used_this_turn,
+    seconds_per_turn:
+      Number.isInteger(loaded_game_state.seconds_per_turn) &&
+      loaded_game_state.seconds_per_turn >= 1
+        ? loaded_game_state.seconds_per_turn
+        : initial_game_state.seconds_per_turn,
+    overtime_points_per_minute:
+      Number.isInteger(loaded_game_state.overtime_points_per_minute) &&
+      loaded_game_state.overtime_points_per_minute >= 1
+        ? loaded_game_state.overtime_points_per_minute
+        : initial_game_state.overtime_points_per_minute,
     player_turn_order: Array.isArray(loaded_game_state.player_turn_order)
       ? loaded_game_state.player_turn_order
       : [...initial_game_state.player_turn_order],
