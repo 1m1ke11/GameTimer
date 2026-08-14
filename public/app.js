@@ -34,10 +34,12 @@ const overtime_points_per_minute_input = document.getElementById(
   'overtime_points_per_minute_input'
 );
 const start_game_button = document.getElementById('start_game_button');
+const stop_clock_button = document.getElementById('stop_clock_button');
 const end_turn_button = document.getElementById('end_turn_button');
 const additional_turn_button = document.getElementById('additional_turn_button');
 const pause_button = document.getElementById('pause_button');
 const resume_button = document.getElementById('resume_button');
+const undo_turn_button = document.getElementById('undo_turn_button');
 const reset_button = document.getElementById('reset_button');
 const change_player_button = document.getElementById('change_player_button');
 const action_error = document.getElementById('action_error');
@@ -93,7 +95,11 @@ function formatPacePoints(player_index, time_ms, game_state) {
 function getDisplayTimes(game_state) {
   const display_times = [...game_state.player_times_ms];
 
-  if (game_state.status === 'running' && game_state.turn_started_at !== null) {
+  if (
+    game_state.status === 'running' &&
+    !game_state.clock_is_stopped &&
+    game_state.turn_started_at !== null
+  ) {
     const elapsed_time = Date.now() - game_state.turn_started_at;
     const active_index = game_state.active_player_index;
     display_times[active_index] += elapsed_time;
@@ -301,6 +307,10 @@ function createOtherPlayerCell(player_index, elapsed_time, game_state) {
     cell.classList.add('is_active');
   }
 
+  if (is_active && game_state.clock_is_stopped) {
+    cell.classList.add('is_clock_stopped');
+  }
+
   const turn_count = document.createElement('div');
   turn_count.className = 'other_player_turn_count';
   turn_count.textContent = formatTurnCount(player_index, game_state);
@@ -334,6 +344,7 @@ function updateOtherPlayerCell(cell, player_index, elapsed_time, game_state) {
     cell.classList.add('is_admin_editable');
   }
   cell.classList.toggle('is_active', is_active);
+  cell.classList.toggle('is_clock_stopped', is_active && Boolean(game_state.clock_is_stopped));
 
   const turn_count = cell.querySelector('.other_player_turn_count');
   const pace_points = cell.querySelector('.other_player_pace_points');
@@ -411,6 +422,7 @@ function updateActionButtons(game_state) {
   const is_running = game_state.status === 'running';
   const is_paused = game_state.status === 'paused';
   const is_waiting = game_state.status === 'waiting';
+  const clock_is_stopped = Boolean(game_state.clock_is_stopped);
   const player_is_admin = isAdmin(current_player_index);
   const is_your_turn =
     is_running && game_state.active_player_index === current_player_index;
@@ -437,10 +449,21 @@ function updateActionButtons(game_state) {
       : 'Zakończ moją turę';
   }
 
-  pause_button.disabled = !is_running || !player_is_admin;
-  pause_button.hidden = is_paused || !player_is_admin;
-  resume_button.hidden = !is_paused || !player_is_admin;
+  pause_button.disabled = !is_running || clock_is_stopped || !player_is_admin;
+  pause_button.hidden = is_paused || clock_is_stopped || !player_is_admin;
+  resume_button.hidden = !(is_paused || clock_is_stopped) || !player_is_admin;
+  undo_turn_button.disabled =
+    !player_is_admin ||
+    is_waiting ||
+    !game_state.can_undo_turn;
   reset_button.disabled = !player_is_admin;
+
+  const can_stop_clock =
+    is_running && !clock_is_stopped && (player_is_admin || is_your_turn);
+
+  stop_clock_button.disabled = !can_stop_clock;
+  stop_clock_button.classList.toggle('is_stopped', clock_is_stopped);
+  stop_clock_button.textContent = clock_is_stopped ? 'Zegar zatrzymany' : 'Liczenie punktów';
 
   const additional_turns_used =
     game_state.additional_turns_used_this_turn ?? 0;
@@ -455,6 +478,7 @@ function updateActionButtons(game_state) {
   }
 
   if (is_paused || is_waiting) {
+    stop_clock_button.disabled = true;
     end_turn_button.disabled = true;
     additional_turn_button.disabled = true;
   }
@@ -542,6 +566,10 @@ function renderGameState(game_state) {
   your_pace_points.classList.toggle('is_negative', your_points < 0);
   your_timer_section.className = `your_timer_section ${PLAYER_COLOR_CLASSES[current_player_index]}`;
   your_timer_section.classList.toggle('is_active', is_your_turn);
+  your_timer_section.classList.toggle(
+    'is_clock_stopped',
+    is_your_turn && Boolean(game_state.clock_is_stopped)
+  );
   edit_self_button.hidden = !isAdmin(current_player_index);
 
   renderOtherPlayersRow(display_times, game_state);
@@ -570,9 +598,11 @@ function joinPlayer(player_index) {
       player_turn_counts: [0, 0, 0, 0],
       player_additional_turns_used: [0, 0, 0, 0],
       additional_turns_used_this_turn: 0,
+      clock_is_stopped: false,
       seconds_per_turn: DEFAULT_SECONDS_PER_TURN,
       overtime_points_per_minute: DEFAULT_OVERTIME_POINTS_PER_MINUTE,
       player_turn_order: [0, 1, 2, 3],
+      can_undo_turn: false,
       connected_players: {}
     });
   });
@@ -581,11 +611,18 @@ function joinPlayer(player_index) {
 function emitWithFeedback(event_name, argument, error_element) {
   showError(error_element, '');
 
-  socket.emit(event_name, argument, (response) => {
+  const handle_response = (response) => {
     if (!response?.success) {
       showError(error_element, response?.message ?? 'Akcja nie powiodła się.');
     }
-  });
+  };
+
+  if (argument === null || argument === undefined) {
+    socket.emit(event_name, handle_response);
+    return;
+  }
+
+  socket.emit(event_name, argument, handle_response);
 }
 
 player_buttons.addEventListener('click', (event) => {
@@ -673,6 +710,10 @@ end_turn_button.addEventListener('click', () => {
   emitWithFeedback('end_turn', null, action_error);
 });
 
+stop_clock_button.addEventListener('click', () => {
+  emitWithFeedback('stop_clock', null, action_error);
+});
+
 additional_turn_button.addEventListener('click', () => {
   showError(action_error, '');
 
@@ -735,6 +776,10 @@ pause_button.addEventListener('click', () => {
 
 resume_button.addEventListener('click', () => {
   emitWithFeedback('resume_game', null, action_error);
+});
+
+undo_turn_button.addEventListener('click', () => {
+  emitWithFeedback('undo_turn', null, action_error);
 });
 
 reset_button.addEventListener('click', () => {

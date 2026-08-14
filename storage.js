@@ -20,15 +20,26 @@ function createPersistedGameState(game_state) {
     player_turn_counts: [...game_state.player_turn_counts],
     player_additional_turns_used: [...game_state.player_additional_turns_used],
     additional_turns_used_this_turn: game_state.additional_turns_used_this_turn ?? 0,
+    clock_is_stopped: Boolean(game_state.clock_is_stopped),
     seconds_per_turn: game_state.seconds_per_turn,
     overtime_points_per_minute: game_state.overtime_points_per_minute,
     player_turn_order: [...game_state.player_turn_order],
+    turn_undo_snapshots: Array.isArray(game_state.turn_undo_snapshots)
+      ? game_state.turn_undo_snapshots.map((snapshot) => ({
+          active_player_index: snapshot.active_player_index,
+          additional_turns_used_this_turn: snapshot.additional_turns_used_this_turn,
+          player_turn_counts: [...snapshot.player_turn_counts],
+          player_additional_turns_used: [...snapshot.player_additional_turns_used],
+          player_times_ms: [...snapshot.player_times_ms]
+        }))
+      : [],
     connected_players: {},
     saved_at: Date.now()
   };
 
   if (
     persisted_game_state.status === 'running' &&
+    !persisted_game_state.clock_is_stopped &&
     persisted_game_state.turn_started_at !== null
   ) {
     const elapsed_time = Date.now() - persisted_game_state.turn_started_at;
@@ -124,6 +135,7 @@ function normalizeLoadedGameState(loaded_game_state, createInitialGameState) {
     )
       ? Math.max(0, loaded_game_state.additional_turns_used_this_turn)
       : initial_game_state.additional_turns_used_this_turn,
+    clock_is_stopped: Boolean(loaded_game_state.clock_is_stopped),
     seconds_per_turn:
       Number.isInteger(loaded_game_state.seconds_per_turn) &&
       loaded_game_state.seconds_per_turn >= 1
@@ -137,6 +149,38 @@ function normalizeLoadedGameState(loaded_game_state, createInitialGameState) {
     player_turn_order: Array.isArray(loaded_game_state.player_turn_order)
       ? loaded_game_state.player_turn_order
       : [...initial_game_state.player_turn_order],
+    turn_undo_snapshots: Array.isArray(loaded_game_state.turn_undo_snapshots)
+      ? loaded_game_state.turn_undo_snapshots
+          .filter(
+            (snapshot) =>
+              snapshot &&
+              Number.isInteger(snapshot.active_player_index) &&
+              snapshot.active_player_index >= 0 &&
+              snapshot.active_player_index <= 3 &&
+              Array.isArray(snapshot.player_turn_counts) &&
+              snapshot.player_turn_counts.length === 4 &&
+              Array.isArray(snapshot.player_additional_turns_used) &&
+              snapshot.player_additional_turns_used.length === 4 &&
+              Array.isArray(snapshot.player_times_ms) &&
+              snapshot.player_times_ms.length === 4
+          )
+          .map((snapshot) => ({
+            active_player_index: snapshot.active_player_index,
+            additional_turns_used_this_turn: Math.max(
+              0,
+              Number(snapshot.additional_turns_used_this_turn) || 0
+            ),
+            player_turn_counts: snapshot.player_turn_counts.map((turn_count) =>
+              Math.max(0, Number(turn_count) || 0)
+            ),
+            player_additional_turns_used: snapshot.player_additional_turns_used.map(
+              (used_count) => Math.max(0, Number(used_count) || 0)
+            ),
+            player_times_ms: snapshot.player_times_ms.map((time_value) =>
+              Math.max(0, Number(time_value) || 0)
+            )
+          }))
+      : [...initial_game_state.turn_undo_snapshots],
     connected_players: {}
   };
 
@@ -165,11 +209,15 @@ function normalizeLoadedGameState(loaded_game_state, createInitialGameState) {
     normalized_game_state.status = 'waiting';
   }
 
-  if (normalized_game_state.status === 'running' && normalized_game_state.turn_started_at === null) {
+  if (
+    normalized_game_state.status === 'running' &&
+    !normalized_game_state.clock_is_stopped &&
+    normalized_game_state.turn_started_at === null
+  ) {
     normalized_game_state.turn_started_at = Date.now();
   }
 
-  if (normalized_game_state.status === 'paused') {
+  if (normalized_game_state.status === 'paused' || normalized_game_state.clock_is_stopped) {
     normalized_game_state.turn_started_at = null;
   }
 

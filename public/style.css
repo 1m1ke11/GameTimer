@@ -224,15 +224,9 @@ body {
   color: inherit;
 }
 
-.your_timer_section.is_active .primary_button {
-  background: rgba(255, 255, 255, 0.95);
-  color: #0f172a;
-}
-
+.your_timer_section.is_active .primary_button,
 .your_timer_section.is_active .secondary_button {
-  background: rgba(255, 255, 255, 0.2);
-  color: inherit;
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #0f172a;
 }
 
 .your_turn_count {
@@ -338,6 +332,14 @@ body {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   line-height: 1;
+}
+
+.your_timer_section.is_clock_stopped .your_timer_value {
+  opacity: 0.7;
+}
+
+.other_player_cell.is_clock_stopped .other_player_time {
+  opacity: 0.7;
 }
 
 h1,
@@ -529,10 +531,43 @@ h2 {
   }
 }
 
-#end_turn_button {
-  min-height: 168px;
-  font-size: 2.7rem;
-  padding: 24px;
+#end_turn_button,
+#stop_clock_button,
+#additional_turn_button,
+.your_timer_section.is_active #end_turn_button,
+.your_timer_section.is_active #stop_clock_button,
+.your_timer_section.is_active #additional_turn_button {
+  color: #0f172a;
+  border: 2px solid #cbd5e1;
+}
+
+#end_turn_button,
+.your_timer_section.is_active #end_turn_button {
+  min-height: 126px;
+  font-size: 2rem;
+  padding: 16px;
+  background: #f8fafc;
+}
+
+#stop_clock_button,
+.your_timer_section.is_active #stop_clock_button {
+  min-height: 126px;
+  background: #cbd5e1;
+}
+
+#additional_turn_button,
+.your_timer_section.is_active #additional_turn_button {
+  background: #cbd5e1;
+}
+
+#stop_clock_button.is_stopped,
+#stop_clock_button.is_stopped:disabled,
+.your_timer_section.is_active #stop_clock_button.is_stopped,
+.your_timer_section.is_active #stop_clock_button.is_stopped:disabled {
+  opacity: 1;
+  background: #64748b;
+  color: #f8fafc;
+  border: 2px solid #475569;
 }
 
 .text_button {
@@ -549,6 +584,7 @@ h2 {
 
 .button_row {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
 }
 

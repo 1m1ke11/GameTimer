@@ -9,6 +9,7 @@ const PORT = 3000;
 const PLAYER_NAMES = ['Czerwony', 'Niebieski', 'Żółty', 'Zielony'];
 const ADMIN_PLAYER_INDEX = 0;
 const MAX_ADDITIONAL_TURNS_PER_TURN = 2;
+const MAX_TURN_UNDO_SNAPSHOTS = 20;
 const DEFAULT_SECONDS_PER_TURN = 30;
 const DEFAULT_OVERTIME_POINTS_PER_MINUTE = 5;
 const MIN_SECONDS_PER_TURN = 1;
@@ -33,9 +34,11 @@ function createInitialGameState() {
     player_turn_counts: [0, 0, 0, 0],
     player_additional_turns_used: [0, 0, 0, 0],
     additional_turns_used_this_turn: 0,
+    clock_is_stopped: false,
     seconds_per_turn: DEFAULT_SECONDS_PER_TURN,
     overtime_points_per_minute: DEFAULT_OVERTIME_POINTS_PER_MINUTE,
     player_turn_order: [0, 1, 2, 3],
+    turn_undo_snapshots: [],
     connected_players: {}
   };
 }
@@ -58,8 +61,16 @@ function getLocalNetworkAddresses() {
   return addresses;
 }
 
+function isClockTicking() {
+  return (
+    game_state.status === 'running' &&
+    !game_state.clock_is_stopped &&
+    game_state.turn_started_at !== null
+  );
+}
+
 function getElapsedActiveTime() {
-  if (game_state.status !== 'running' || game_state.turn_started_at === null) {
+  if (!isClockTicking()) {
     return 0;
   }
 
@@ -67,7 +78,7 @@ function getElapsedActiveTime() {
 }
 
 function applyActivePlayerElapsedTime() {
-  if (game_state.status !== 'running' || game_state.turn_started_at === null) {
+  if (!isClockTicking()) {
     return;
   }
 
@@ -85,9 +96,13 @@ function getPublicGameState() {
     player_turn_counts: [...game_state.player_turn_counts],
     player_additional_turns_used: [...game_state.player_additional_turns_used],
     additional_turns_used_this_turn: game_state.additional_turns_used_this_turn,
+    clock_is_stopped: Boolean(game_state.clock_is_stopped),
     seconds_per_turn: game_state.seconds_per_turn,
     overtime_points_per_minute: game_state.overtime_points_per_minute,
     player_turn_order: [...game_state.player_turn_order],
+    can_undo_turn: Array.isArray(game_state.turn_undo_snapshots)
+      ? game_state.turn_undo_snapshots.length > 0
+      : false,
     connected_players: { ...game_state.connected_players }
   };
 }
@@ -164,6 +179,49 @@ function normalizePaceSettings(settings) {
   };
 }
 
+function copyNumberList(values) {
+  return values.map((value) => Number(value) || 0);
+}
+
+function createTurnUndoSnapshot() {
+  return {
+    active_player_index: game_state.active_player_index,
+    additional_turns_used_this_turn: game_state.additional_turns_used_this_turn,
+    player_turn_counts: copyNumberList(game_state.player_turn_counts),
+    player_additional_turns_used: copyNumberList(game_state.player_additional_turns_used),
+    player_times_ms: copyNumberList(game_state.player_times_ms)
+  };
+}
+
+function pushTurnUndoSnapshot() {
+  if (!Array.isArray(game_state.turn_undo_snapshots)) {
+    game_state.turn_undo_snapshots = [];
+  }
+
+  game_state.turn_undo_snapshots.push(createTurnUndoSnapshot());
+
+  if (game_state.turn_undo_snapshots.length > MAX_TURN_UNDO_SNAPSHOTS) {
+    game_state.turn_undo_snapshots.shift();
+  }
+}
+
+function restoreTurnUndoSnapshot(snapshot) {
+  game_state.active_player_index = snapshot.active_player_index;
+  game_state.additional_turns_used_this_turn = snapshot.additional_turns_used_this_turn;
+  game_state.player_turn_counts = copyNumberList(snapshot.player_turn_counts);
+  game_state.player_additional_turns_used = copyNumberList(
+    snapshot.player_additional_turns_used
+  );
+  game_state.player_times_ms = copyNumberList(snapshot.player_times_ms);
+  game_state.clock_is_stopped = false;
+
+  if (game_state.status === 'running') {
+    game_state.turn_started_at = Date.now();
+  } else {
+    game_state.turn_started_at = null;
+  }
+}
+
 function advanceToNextPlayer() {
   const turn_order = game_state.player_turn_order;
   const current_order_position = turn_order.indexOf(game_state.active_player_index);
@@ -171,6 +229,7 @@ function advanceToNextPlayer() {
   game_state.active_player_index = turn_order[next_order_position];
   game_state.player_turn_counts[game_state.active_player_index] += 1;
   game_state.additional_turns_used_this_turn = 0;
+  game_state.clock_is_stopped = false;
   game_state.turn_started_at = Date.now();
 }
 
@@ -304,6 +363,7 @@ io.on('connection', (socket) => {
     game_state.active_player_index = game_state.player_turn_order[0];
     game_state.player_turn_counts[game_state.active_player_index] += 1;
     game_state.additional_turns_used_this_turn = 0;
+    game_state.clock_is_stopped = false;
     game_state.turn_started_at = Date.now();
 
     callback?.({ success: true });
@@ -326,7 +386,61 @@ io.on('connection', (socket) => {
     }
 
     applyActivePlayerElapsedTime();
+    pushTurnUndoSnapshot();
     advanceToNextPlayer();
+
+    callback?.({ success: true });
+    broadcastGameState();
+  });
+
+  socket.on('undo_turn', (callback) => {
+    if (!rejectUnlessAdmin(socket, callback)) {
+      return;
+    }
+
+    if (game_state.status !== 'running' && game_state.status !== 'paused') {
+      callback?.({ success: false, message: 'Nie można cofnąć tury przed rozpoczęciem gry.' });
+      return;
+    }
+
+    if (
+      !Array.isArray(game_state.turn_undo_snapshots) ||
+      game_state.turn_undo_snapshots.length === 0
+    ) {
+      callback?.({ success: false, message: 'Nie ma tury do cofnięcia.' });
+      return;
+    }
+
+    const snapshot = game_state.turn_undo_snapshots.pop();
+    restoreTurnUndoSnapshot(snapshot);
+
+    callback?.({ success: true });
+    broadcastGameState();
+  });
+
+  socket.on('stop_clock', (callback) => {
+    if (game_state.status !== 'running') {
+      callback?.({ success: false, message: 'Gra nie jest w toku.' });
+      return;
+    }
+
+    if (game_state.clock_is_stopped) {
+      callback?.({ success: false, message: 'Zegar jest już zatrzymany.' });
+      return;
+    }
+
+    const player_index = getPlayerIndexFromSocket(socket);
+    const player_is_admin = isAdmin(player_index);
+    const player_is_active = player_index === game_state.active_player_index;
+
+    if (!player_is_admin && !player_is_active) {
+      callback?.({ success: false, message: 'Tylko aktywny gracz może zatrzymać zegar.' });
+      return;
+    }
+
+    applyActivePlayerElapsedTime();
+    game_state.clock_is_stopped = true;
+    game_state.turn_started_at = null;
 
     callback?.({ success: true });
     broadcastGameState();
@@ -361,6 +475,11 @@ io.on('connection', (socket) => {
     game_state.player_additional_turns_used[active_player_index] += 1;
     game_state.additional_turns_used_this_turn += 1;
 
+    if (game_state.clock_is_stopped) {
+      game_state.clock_is_stopped = false;
+      game_state.turn_started_at = Date.now();
+    }
+
     callback?.({ success: true });
     broadcastGameState();
   });
@@ -391,7 +510,8 @@ io.on('connection', (socket) => {
 
     if (
       game_state.status === 'running' &&
-      game_state.active_player_index === player_index
+      game_state.active_player_index === player_index &&
+      !game_state.clock_is_stopped
     ) {
       game_state.turn_started_at = Date.now();
     }
@@ -426,12 +546,17 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (game_state.status !== 'paused') {
-      callback?.({ success: false, message: 'Gra nie jest wstrzymana.' });
+    const game_is_paused = game_state.status === 'paused';
+    const clock_is_stopped =
+      game_state.status === 'running' && Boolean(game_state.clock_is_stopped);
+
+    if (!game_is_paused && !clock_is_stopped) {
+      callback?.({ success: false, message: 'Zegar nie jest zatrzymany.' });
       return;
     }
 
     game_state.status = 'running';
+    game_state.clock_is_stopped = false;
     game_state.turn_started_at = Date.now();
 
     callback?.({ success: true });
